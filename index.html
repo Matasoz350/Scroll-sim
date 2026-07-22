@@ -16,53 +16,13 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     touch-action: none;
   }
-  #stage {
-    position: relative;
-    width: 100%; height: 100%;
-  }
-  .card {
-    position: absolute;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    overflow: hidden;
-  }
-  .card canvas {
-    position: absolute;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-  }
-  #counterWrap {
-    position: absolute;
-    top: 6%;
-    width: 100%;
-    text-align: center;
-    z-index: 10;
-    pointer-events: none;
-  }
-  #counterNum {
-    font-size: 44px;
-    font-weight: 800;
-    color: white;
-    text-shadow: 0 2px 10px rgba(0,0,0,0.35);
-  }
-  #counterLabel {
-    font-size: 12px;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.8);
-    margin-top: 2px;
-  }
-  #hint {
-    position: absolute;
-    bottom: 8%;
-    width: 100%;
-    text-align: center;
-    color: rgba(255,255,255,0.6);
-    font-size: 13px;
-    z-index: 10;
-    pointer-events: none;
-    transition: opacity 0.5s;
-  }
+  #stage { position: relative; width: 100%; height: 100%; }
+  .card { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: hidden; }
+  .card canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  #counterWrap { position: absolute; top: 6%; width: 100%; text-align: center; z-index: 10; pointer-events: none; }
+  #counterNum { font-size: 44px; font-weight: 800; color: white; text-shadow: 0 2px 10px rgba(0,0,0,0.35); }
+  #counterLabel { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,0.8); margin-top: 2px; }
+  #hint { position: absolute; bottom: 8%; width: 100%; text-align: center; color: rgba(255,255,255,0.6); font-size: 13px; z-index: 10; pointer-events: none; transition: opacity 0.5s; }
 </style>
 </head>
 <body>
@@ -70,7 +30,8 @@
 <div id="stage">
   <div class="card" id="cardA"><canvas id="canvasA"></canvas></div>
   <div class="card" id="cardB"><canvas id="canvasB"></canvas></div>
-  <div id="hint">swipe up ↑</div>
+  <div class="card" id="cardC"><canvas id="canvasC"></canvas></div>
+  <div id="hint">swipe up &#8593; / down &#8595;</div>
   <div id="counterWrap">
     <div id="counterNum">0</div>
     <div id="counterLabel">scrolls</div>
@@ -82,299 +43,573 @@ const stage = document.getElementById('stage');
 const counterNum = document.getElementById('counterNum');
 const hint = document.getElementById('hint');
 
-const canvasA = document.getElementById('canvasA');
-const canvasB = document.getElementById('canvasB');
-const cardA = document.getElementById('cardA');
-const cardB = document.getElementById('cardB');
-
-// layers[0]/[1] swap roles of "current"/"next" after each committed swipe,
-// so whatever's visible while dragging is exactly what stays.
-const layers = [
-  { card: cardA, canvas: canvasA },
-  { card: cardB, canvas: canvasB }
+const layerDefs = [
+  { card: document.getElementById('cardA'), canvas: document.getElementById('canvasA') },
+  { card: document.getElementById('cardB'), canvas: document.getElementById('canvasB') },
+  { card: document.getElementById('cardC'), canvas: document.getElementById('canvasC') }
 ];
-let curIdx = 0;
-let nextIdx = 1;
-function cur() { return layers[curIdx]; }
-function nxt() { return layers[nextIdx]; }
+layerDefs.forEach(l => l.descriptor = null);
 
 let W, H;
 function resize() {
   W = window.innerWidth;
   H = window.innerHeight;
-  [canvasA, canvasB].forEach(c => {
-    c.width = W * devicePixelRatio;
-    c.height = H * devicePixelRatio;
+  layerDefs.forEach(l => {
+    l.canvas.width = W * devicePixelRatio;
+    l.canvas.height = H * devicePixelRatio;
   });
 }
 window.addEventListener('resize', resize);
 resize();
 
-// ---- color palette: bright + darker/moodier options for contrast variety ----
-const PALETTE = [
-  '#FF3B30','#FF9500','#FFCC00','#34C759','#00C7BE','#30B0C7','#32ADE6',
-  '#007AFF','#5856D6','#AF52DE','#FF2D55','#A2845E',
-  '#1C1C1E','#2C2C2E','#0A0A0A','#141414','#0B3D2E','#3D0B3D',
-  '#0B1F3D','#3D2B0B','#4B0000','#00291C','#241033','#1A1A2E'
-];
+function wrap01(v) { return ((v % 1) + 1) % 1; }
+function rnd(min, max) { return min + Math.random() * (max - min); }
+function rndInt(min, max) { return Math.floor(rnd(min, max + 1)); }
 
-function randColor() {
-  return PALETTE[Math.floor(Math.random() * PALETTE.length)];
+// wider, more varied color generation: some slides vivid, some genuinely dark/moody
+function randColor(mode) {
+  const h = Math.floor(Math.random() * 360);
+  let s, l;
+  if (mode === 'dark') { s = rnd(20, 55); l = rnd(6, 26); }
+  else { s = rnd(55, 92); l = rnd(40, 74); }
+  return 'hsl(' + h + ', ' + s + '%, ' + l + '%)';
 }
 
-function drawCard(canvas) {
+const SPEED_TIERS = [0.22, 0.4, 0.65, 1.0, 1.5, 2.2, 3.2];
+
+const TEXTURE_COUNT = 33;
+
+function generateDescriptor() {
+  const paletteMode = Math.random() < 0.45 ? 'dark' : 'vivid';
+  const c1 = randColor(paletteMode);
+  let c2mode = Math.random() < 0.7 ? paletteMode : (paletteMode === 'dark' ? 'vivid' : 'dark');
+  let c2 = randColor(c2mode);
+  let tries = 0;
+  while (c2 === c1 && tries++ < 5) c2 = randColor(c2mode);
+
+  const textureType = Math.floor(Math.random() * TEXTURE_COUNT);
+  const speed = SPEED_TIERS[rndInt(0, SPEED_TIERS.length - 1)] * rnd(0.85, 1.15);
+  const phase = Math.random() * Math.PI * 2;
+  const dir = Math.random() < 0.5 ? 1 : -1;
+  let params = {};
+
+  switch (textureType) {
+    case 0: params = { baseR: rnd(4, 8), spacing: rnd(50, 80) }; break;
+    case 1: params = { spacing: rnd(30, 70), width: rnd(8, 22) }; break;
+    case 2: params = {}; break;
+    case 3: params = { bandH: rnd(28, 68) }; break;
+    case 4: {
+      const n = rndInt(8, 20);
+      const parts = [];
+      for (let i = 0; i < n; i++) parts.push({ x: Math.random(), y: Math.random(), s: rnd(20, 75), vx: rnd(-0.05,0.05), vy: rnd(-0.05,0.05), rot: rnd(0, 6.28) });
+      params = { parts }; break;
+    }
+    case 5: params = { cell: rnd(50, 90) }; break;
+    case 6: params = { spacing: rnd(30, 65) }; break;
+    case 7: params = { ringGap: rnd(35, 65) }; break;
+    case 8: params = { stripeW: rnd(15, 50) }; break;
+    case 9: {
+      const n = rndInt(12, 28);
+      const parts = [];
+      for (let i = 0; i < n; i++) parts.push({ x: Math.random(), y: Math.random(), r: rnd(8, 40), vy: rnd(0.02,0.07) });
+      params = { parts }; break;
+    }
+    case 10: params = { zw: rnd(40, 80), zh: rnd(25, 47) }; break;
+    case 11: {
+      const n = rndInt(30, 70);
+      const stars = [];
+      for (let i = 0; i < n; i++) stars.push({ x: Math.random(), y: Math.random(), r: rnd(2, 5), ph: rnd(0, 6.28) });
+      params = { stars }; break;
+    }
+    case 12: params = { size: rnd(25, 53) }; break;
+    case 13: params = { rays: rndInt(8, 24) }; break;
+    case 14: {
+      const n = rndInt(3, 6);
+      const blobs = [];
+      for (let i = 0; i < n; i++) blobs.push({ x: Math.random(), y: Math.random(), r: rnd(80, 220), vx: rnd(-0.03,0.03), vy: rnd(-0.03,0.03) });
+      params = { blobs }; break;
+    }
+    case 15: params = { gap: rnd(40, 75) }; break;
+    case 16: params = { tightness: rnd(4, 11) }; break;
+    case 17: {
+      const n = rndInt(18, 36);
+      const parts = [];
+      for (let i = 0; i < n; i++) parts.push({ x: Math.random(), y: Math.random(), s: rnd(6, 19), vy: rnd(0.03,0.1), rot: rnd(0,6.28), vr: rnd(-0.02,0.02) });
+      params = { parts }; break;
+    }
+    case 18: params = { rows: rndInt(4, 9), amp: rnd(10, 30), freq: rnd(2, 6) }; break;
+    case 19: params = { cell: rnd(40, 70), rippleFreq: rnd(0.02, 0.05) }; break;
+    case 20: params = { blades: rndInt(6, 14) }; break;
+    case 21: params = { rings: rndInt(3, 5), orbitR: rnd(20, 60), ringR: rnd(30, 90) }; break;
+    case 22: params = { cell: rnd(40, 75) }; break;
+    case 23: {
+      const n = rndInt(10, 22);
+      const parts = [];
+      for (let i = 0; i < n; i++) parts.push({ x: Math.random(), y: Math.random(), len: rnd(30, 90), w: rnd(3, 7), vy: rnd(0.06,0.16) });
+      params = { parts }; break;
+    }
+    case 24: params = { ringGap: rnd(30, 55) }; break;
+    case 25: params = { brickW: rnd(50, 95), brickH: rnd(22, 40) }; break;
+    case 26: {
+      const n = rndInt(10, 22);
+      const parts = [];
+      for (let i = 0; i < n; i++) parts.push({ x: Math.random(), y: Math.random(), r: rnd(10, 35), ph: rnd(0,6.28), vy: rnd(0.01,0.035) });
+      params = { parts }; break;
+    }
+    case 27: {
+      const n = rndInt(5, 10);
+      const sats = [];
+      for (let i = 0; i < n; i++) sats.push({ r: rnd(0.08, 0.44), speed: rnd(0.2,0.8) * (Math.random()<0.5?-1:1), phase: rnd(0,6.28), size: rnd(6,18) });
+      params = { sats }; break;
+    }
+    case 28: params = { amp: rnd(20, 55), freq: rnd(3, 7), thickness: rnd(14, 32) }; break;
+    case 29: {
+      const n = rndInt(14, 24);
+      const pts = [];
+      for (let i = 0; i < n; i++) pts.push({ x: Math.random(), y: Math.random(), ph: rnd(0,6.28) });
+      params = { pts, connectDist: rnd(0.12, 0.22) }; break;
+    }
+    case 30: { // ascending triangle mountains
+      params = { rows: rndInt(5, 9), cols: rndInt(3, 6), baseSize: rnd(30, 70) };
+      break;
+    }
+    case 31: { // faceted mountain skyline (parallax layers)
+      const nLayers = rndInt(3, 5);
+      const layers = [];
+      for (let li = 0; li < nLayers; li++) {
+        const nPts = rndInt(5, 9);
+        const pts = [];
+        for (let i = 0; i <= nPts; i++) pts.push({ x: i / nPts, y: rnd(0.3, 0.75) - li * 0.05 });
+        layers.push({ pts, speedFactor: rnd(0.4, 1.4) * (li + 1), opacity: 0.08 + li * 0.05 });
+      }
+      params = { layers };
+      break;
+    }
+    case 32: { // fine interlocking zigzag weave
+      params = { zw: rnd(20, 40), zh: rnd(14, 26) };
+      break;
+    }
+  }
+
+  const darken = Math.random() < 0.25;
+  const lighten = !darken && Math.random() < 0.15;
+  return { c1, c2, textureType, speed, phase, dir, params, darken, lighten };
+}
+
+function drawZigzagLayer(ctx, w, h, zw, zh, offsetY, color, lineWidth) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  for (let y0 = -zh*2; y0 < h + zh*2; y0 += zh*2) {
+    let y = y0 + offsetY;
+    ctx.beginPath();
+    let x = 0, up = true;
+    ctx.moveTo(x, y);
+    while (x < w) {
+      y += up ? -zh/2 : zh/2;
+      x += zw/2;
+      ctx.lineTo(x, y);
+      up = !up;
+    }
+    ctx.stroke();
+  }
+}
+
+function drawCard(canvas, d, t) {
+  if (!d) return;
   const ctx = canvas.getContext('2d');
   const dpr = devicePixelRatio;
   const w = canvas.width, h = canvas.height;
-  const c1 = randColor();
-  let c2 = randColor();
-  while (c2 === c1) c2 = randColor();
+  const anim = t * d.speed + d.phase;
+  const dirAnim = anim * d.dir;
+  const p = d.params;
 
-  const angle = Math.random() * Math.PI * 2;
-  const x1 = w/2 + Math.cos(angle) * w/2;
-  const y1 = h/2 + Math.sin(angle) * h/2;
-  const x2 = w/2 - Math.cos(angle) * w/2;
-  const y2 = h/2 - Math.sin(angle) * h/2;
-
-  const grad = ctx.createLinearGradient(x1, y1, x2, y2);
-  grad.addColorStop(0, c1);
-  grad.addColorStop(1, c2);
+  const grad = ctx.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, d.c1);
+  grad.addColorStop(1, d.c2);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
 
-  const texture = Math.floor(Math.random() * 18);
-
-  if (texture === 0) {
-    // dot grid
-    ctx.fillStyle = 'rgba(255,255,255,0.18)';
-    const spacing = 60 * dpr;
-    for (let x = spacing/2; x < w; x += spacing) {
-      for (let y = spacing/2; y < h; y += spacing) {
-        ctx.beginPath();
-        ctx.arc(x, y, 5 * dpr, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  } else if (texture === 1) {
-    // diagonal stripes
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 14 * dpr;
-    for (let x = -h; x < w; x += 45 * dpr) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x + h, h);
-      ctx.stroke();
-    }
-  } else if (texture === 2) {
-    // radial glow
-    const rg = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w * 0.6);
-    rg.addColorStop(0, 'rgba(255,255,255,0.35)');
-    rg.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = rg;
-    ctx.fillRect(0, 0, w, h);
-  } else if (texture === 3) {
-    // horizontal bands
-    ctx.fillStyle = 'rgba(0,0,0,0.12)';
-    const bandH = 50 * dpr;
-    for (let y = 0; y < h; y += bandH * 2) {
-      ctx.fillRect(0, y, w, bandH);
-    }
-  } else if (texture === 4) {
-    // scattered triangles
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    for (let i = 0; i < 14; i++) {
-      const cx = Math.random() * w, cy = Math.random() * h;
-      const s = (Math.random() * 60 + 30) * dpr;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - s/2);
-      ctx.lineTo(cx - s/2, cy + s/2);
-      ctx.lineTo(cx + s/2, cy + s/2);
-      ctx.closePath();
-      ctx.fill();
-    }
-  } else if (texture === 5) {
-    // checkerboard
-    const cell = 70 * dpr;
-    ctx.fillStyle = 'rgba(0,0,0,0.14)';
-    let row = 0;
-    for (let y = 0; y < h; y += cell) {
-      let col = row % 2;
-      for (let x = -cell; x < w; x += cell) {
-        if (col % 2 === 0) ctx.fillRect(x, y, cell, cell);
-        col++;
-      }
-      row++;
-    }
-  } else if (texture === 6) {
-    // crosshatch
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 6 * dpr;
-    for (let x = -h; x < w; x += 50 * dpr) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + h, h); ctx.stroke();
-    }
-    for (let x = 0; x < w + h; x += 50 * dpr) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x - h, h); ctx.stroke();
-    }
-  } else if (texture === 7) {
-    // concentric rings
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 8 * dpr;
-    const cx = w/2, cy = h/2;
-    for (let r = 30 * dpr; r < w; r += 50 * dpr) {
-      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
-    }
-  } else if (texture === 8) {
-    // vertical stripes, varied widths
-    let x = 0;
-    let toggle = false;
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    while (x < w) {
-      const sw = (Math.random() * 40 + 20) * dpr;
-      if (toggle) ctx.fillRect(x, 0, sw, h);
-      x += sw;
-      toggle = !toggle;
-    }
-  } else if (texture === 9) {
-    // scattered circles, varied size
-    for (let i = 0; i < 20; i++) {
-      const r = (Math.random() * 40 + 8) * dpr;
-      ctx.fillStyle = `rgba(255,255,255,${(0.05 + Math.random() * 0.15).toFixed(2)})`;
-      ctx.beginPath();
-      ctx.arc(Math.random() * w, Math.random() * h, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (texture === 10) {
-    // chevron / zigzag rows
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-    ctx.lineWidth = 8 * dpr;
-    const zw = 60 * dpr, zh = 40 * dpr;
-    for (let y = -zh; y < h + zh; y += zh) {
-      ctx.beginPath();
-      let x = 0, up = true;
-      ctx.moveTo(x, y);
-      while (x < w) {
-        y += up ? -zh/2 : zh/2;
-        x += zw/2;
-        ctx.lineTo(x, y);
-        up = !up;
-      }
-      ctx.stroke();
-    }
-  } else if (texture === 11) {
-    // noise / grain speckle
-    const dotCount = 900;
-    for (let i = 0; i < dotCount; i++) {
-      const shade = Math.random() < 0.5 ? 255 : 0;
-      ctx.fillStyle = `rgba(${shade},${shade},${shade},${(Math.random() * 0.12).toFixed(2)})`;
-      ctx.fillRect(Math.random() * w, Math.random() * h, 2 * dpr, 2 * dpr);
-    }
-  } else if (texture === 12) {
-    // hexagon-ish grid (approximated with offset circles/hex paths)
-    const size = 40 * dpr;
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth = 3 * dpr;
-    for (let row = 0; row * size * 1.5 < h + size; row++) {
-      for (let col = 0; col * size * Math.sqrt(3) < w + size; col++) {
-        const cx = col * size * Math.sqrt(3) + (row % 2 ? size * Math.sqrt(3) / 2 : 0);
-        const cy = row * size * 1.5;
-        ctx.beginPath();
-        for (let i = 0; i < 6; i++) {
-          const a = Math.PI / 3 * i;
-          const px = cx + size * 0.5 * Math.cos(a);
-          const py = cy + size * 0.5 * Math.sin(a);
-          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  switch (d.textureType) {
+    case 0: {
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      const spacing = p.spacing * dpr;
+      const pulse = Math.sin(anim) * 0.5 + 0.5;
+      for (let x = spacing/2; x < w; x += spacing)
+        for (let y = spacing/2; y < h; y += spacing) {
+          ctx.beginPath(); ctx.arc(x, y, (p.baseR + pulse*4) * dpr, 0, Math.PI*2); ctx.fill();
         }
-        ctx.closePath();
+      break;
+    }
+    case 1: {
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = p.width * dpr;
+      const offset = wrap01(dirAnim/6) * p.spacing * dpr;
+      for (let x = -h - p.spacing*dpr; x < w + p.spacing*dpr; x += p.spacing*dpr) {
+        const xx = x + offset;
+        ctx.beginPath(); ctx.moveTo(xx, 0); ctx.lineTo(xx + h, h); ctx.stroke();
+      }
+      break;
+    }
+    case 2: {
+      const pulse = 0.4 + (Math.sin(anim)*0.5+0.5)*0.3;
+      const rg = ctx.createRadialGradient(w/2,h/2,0,w/2,h/2,w*pulse);
+      rg.addColorStop(0,'rgba(255,255,255,0.35)'); rg.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle = rg; ctx.fillRect(0,0,w,h);
+      break;
+    }
+    case 3: {
+      ctx.fillStyle = 'rgba(0,0,0,0.12)';
+      const bandH = p.bandH*dpr; const offset = wrap01(dirAnim/6)*bandH*2;
+      for (let y=-bandH*2; y<h+bandH*2; y+=bandH*2) ctx.fillRect(0, y+offset, w, bandH);
+      break;
+    }
+    case 4: {
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      p.parts.forEach(pt=>{
+        const cx=wrap01(pt.x+pt.vx*t)*w, cy=wrap01(pt.y+pt.vy*t)*h, s=pt.s*dpr, rot=pt.rot+t*0.3*d.dir;
+        ctx.save(); ctx.translate(cx,cy); ctx.rotate(rot);
+        ctx.beginPath(); ctx.moveTo(0,-s/2); ctx.lineTo(-s/2,s/2); ctx.lineTo(s/2,s/2); ctx.closePath(); ctx.fill();
+        ctx.restore();
+      });
+      break;
+    }
+    case 5: {
+      const cell=p.cell*dpr; ctx.fillStyle='rgba(0,0,0,0.14)';
+      const offset=wrap01(dirAnim/6)*cell; let row=0;
+      for (let y=-cell; y<h+cell; y+=cell){ let col=row%2;
+        for (let x=-cell*2; x<w+cell; x+=cell){ if(col%2===0) ctx.fillRect(x+offset,y,cell,cell); col++; } row++; }
+      break;
+    }
+    case 6: {
+      ctx.save(); ctx.translate(w/2,h/2); ctx.rotate(Math.sin(anim*0.3)*0.3*d.dir); ctx.translate(-w/2,-h/2);
+      ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=6*dpr;
+      for (let x=-h*2; x<w+h; x+=p.spacing*dpr){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x+h,h); ctx.stroke(); }
+      for (let x=-h; x<w+h*2; x+=p.spacing*dpr){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x-h,h); ctx.stroke(); }
+      ctx.restore();
+      break;
+    }
+    case 7: {
+      ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=8*dpr;
+      const cx=w/2, cy=h/2, gap=p.ringGap*dpr, offset=wrap01(dirAnim/6)*gap;
+      for (let r=offset; r<w; r+=gap){ ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke(); }
+      break;
+    }
+    case 8: {
+      const stripeW=p.stripeW*dpr; const offset=wrap01(dirAnim/6)*stripeW*2; let toggle=false;
+      ctx.fillStyle='rgba(255,255,255,0.10)';
+      for (let x=-stripeW*2; x<w+stripeW*2; x+=stripeW){ if(toggle) ctx.fillRect(x+offset,0,stripeW,h); toggle=!toggle; }
+      break;
+    }
+    case 9: {
+      p.parts.forEach(pt=>{
+        const cx=pt.x*w, cy=wrap01(pt.y-pt.vy*t*d.dir)*h;
+        ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.beginPath(); ctx.arc(cx,cy,pt.r*dpr,0,Math.PI*2); ctx.fill();
+      });
+      break;
+    }
+    case 10: {
+      ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineWidth=8*dpr;
+      const zw=p.zw*dpr, zh=p.zh*dpr, offset=wrap01(dirAnim/6)*zh*2;
+      for (let y0=-zh*2; y0<h+zh*2; y0+=zh*2){ let y=y0+offset; ctx.beginPath(); let x=0,up=true; ctx.moveTo(x,y);
+        while(x<w){ y+=up?-zh/2:zh/2; x+=zw/2; ctx.lineTo(x,y); up=!up; } ctx.stroke(); }
+      break;
+    }
+    case 11: {
+      p.stars.forEach(s=>{
+        const tw = Math.sin(anim*2 + s.ph)*0.5+0.5;
+        ctx.fillStyle = 'rgba(255,255,255,' + (0.15 + tw*0.35).toFixed(2) + ')';
+        ctx.beginPath(); ctx.arc(s.x*w, s.y*h, s.r*dpr*(0.6+tw*0.6), 0, Math.PI*2); ctx.fill();
+      });
+      break;
+    }
+    case 12: {
+      const size=p.size*dpr;
+      ctx.save(); ctx.translate(w/2,h/2); ctx.rotate(dirAnim*0.4); ctx.translate(-w/2,-h/2);
+      ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=3*dpr;
+      for (let row=-1; row*size*1.5<h+size*2; row++)
+        for (let col=-1; col*size*Math.sqrt(3)<w+size*2; col++){
+          const cx=col*size*Math.sqrt(3)+(row%2?size*Math.sqrt(3)/2:0), cy=row*size*1.5;
+          ctx.beginPath();
+          for (let i=0;i<6;i++){ const a=Math.PI/3*i, px=cx+size*0.5*Math.cos(a), py=cy+size*0.5*Math.sin(a); if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); }
+          ctx.closePath(); ctx.stroke();
+        }
+      ctx.restore();
+      break;
+    }
+    case 13: {
+      ctx.save(); ctx.translate(w/2,h/2); ctx.rotate(dirAnim*0.2); ctx.translate(-w/2,-h/2);
+      const cx=w/2, cy=h/2, rays=p.rays;
+      for (let i=0;i<rays;i++){ ctx.fillStyle = i%2===0?'rgba(255,255,255,0.10)':'rgba(0,0,0,0.06)';
+        const a1=(Math.PI*2/rays)*i, a2=a1+(Math.PI*2/rays);
+        ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a1)*w,cy+Math.sin(a1)*w); ctx.lineTo(cx+Math.cos(a2)*w,cy+Math.sin(a2)*w); ctx.closePath(); ctx.fill(); }
+      ctx.restore();
+      break;
+    }
+    case 14: {
+      p.blobs.forEach(b=>{
+        const bx=wrap01(b.x+b.vx*t)*w, by=wrap01(b.y+b.vy*t)*h;
+        const bg=ctx.createRadialGradient(bx,by,0,bx,by,b.r*dpr);
+        bg.addColorStop(0,'rgba(255,255,255,0.14)'); bg.addColorStop(1,'rgba(255,255,255,0)');
+        ctx.fillStyle=bg; ctx.fillRect(0,0,w,h);
+      });
+      break;
+    }
+    case 15: {
+      ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineWidth=6*dpr;
+      const cx=w/2, cy=h/2, pulse=(Math.sin(anim)*0.5+0.5)*p.gap*dpr;
+      for (let s=pulse; s<w; s+=p.gap*dpr) ctx.strokeRect(cx-s/2, cy-s/2, s, s);
+      break;
+    }
+    case 16: {
+      ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=6*dpr;
+      const cx=w/2, cy=h/2;
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(dirAnim*0.4); ctx.translate(-cx,-cy);
+      ctx.beginPath();
+      for (let a=0; a<Math.PI*16; a+=0.12){ const r=a*p.tightness*dpr, x=cx+Math.cos(a)*r, y=cy+Math.sin(a)*r; if(a===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+      ctx.stroke(); ctx.restore();
+      break;
+    }
+    case 17: {
+      p.parts.forEach(pt=>{
+        const cx=pt.x*w, cy=wrap01(pt.y+pt.vy*t)*h, s=pt.s*dpr, rot=pt.rot+pt.vr*t*20;
+        ctx.fillStyle='rgba(255,255,255,0.16)';
+        ctx.save(); ctx.translate(cx,cy); ctx.rotate(rot); ctx.fillRect(-s/2,-s/2,s,s*0.4); ctx.restore();
+      });
+      break;
+    }
+    case 18: {
+      ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=5*dpr;
+      for (let r=0; r<p.rows; r++){
+        const baseY=((r+0.5)/p.rows)*h;
+        ctx.beginPath();
+        for (let x=0; x<=w; x+=8*dpr){
+          const y=baseY + Math.sin((x/w)*p.freq*Math.PI*2 + dirAnim + r*0.6) * p.amp*dpr;
+          if (x===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        }
         ctx.stroke();
       }
+      break;
     }
-  } else if (texture === 13) {
-    // starburst rays from center
-    const cx = w/2, cy = h/2;
-    const rays = 16;
-    for (let i = 0; i < rays; i++) {
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.06)';
-      const a1 = (Math.PI * 2 / rays) * i;
-      const a2 = a1 + (Math.PI * 2 / rays);
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.cos(a1) * w, cy + Math.sin(a1) * w);
-      ctx.lineTo(cx + Math.cos(a2) * w, cy + Math.sin(a2) * w);
-      ctx.closePath();
-      ctx.fill();
+    case 19: {
+      const cell=p.cell*dpr, cx=w/2, cy=h/2;
+      ctx.fillStyle='rgba(255,255,255,0.14)';
+      for (let x=cell/2; x<w; x+=cell)
+        for (let y=cell/2; y<h; y+=cell){
+          const dist=Math.hypot(x-cx,y-cy);
+          const s=(Math.sin(dist*p.rippleFreq - dirAnim*3)*0.5+0.5) * cell*0.7;
+          ctx.fillRect(x-s/2, y-s/2, s, s);
+        }
+      break;
     }
-  } else if (texture === 14) {
-    // soft blobs (plasma-ish)
-    for (let i = 0; i < 5; i++) {
-      const r = (Math.random() * 150 + 100) * dpr;
-      const bg = ctx.createRadialGradient(
-        Math.random() * w, Math.random() * h, 0,
-        Math.random() * w, Math.random() * h, r
-      );
-      bg.addColorStop(0, `rgba(255,255,255,${(0.08 + Math.random() * 0.12).toFixed(2)})`);
-      bg.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, 0, w, h);
-    }
-  } else if (texture === 15) {
-    // concentric squares
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-    ctx.lineWidth = 6 * dpr;
-    const cx = w/2, cy = h/2;
-    for (let s = 40 * dpr; s < w; s += 55 * dpr) {
-      ctx.strokeRect(cx - s/2, cy - s/2, s, s);
-    }
-  } else if (texture === 16) {
-    // spiral
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-    ctx.lineWidth = 6 * dpr;
-    const cx = w/2, cy = h/2;
-    ctx.beginPath();
-    for (let a = 0; a < Math.PI * 16; a += 0.1) {
-      const r = a * 8 * dpr;
-      const x = cx + Math.cos(a) * r;
-      const y = cy + Math.sin(a) * r;
-      if (a === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  } else if (texture === 17) {
-    // confetti - small varied shapes scattered
-    for (let i = 0; i < 30; i++) {
-      const cx = Math.random() * w, cy = Math.random() * h;
-      const s = (Math.random() * 16 + 6) * dpr;
-      ctx.fillStyle = `rgba(255,255,255,${(0.08 + Math.random() * 0.18).toFixed(2)})`;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(Math.random() * Math.PI * 2);
-      ctx.fillRect(-s/2, -s/2, s, s * 0.4);
+    case 20: {
+      ctx.save(); ctx.translate(w/2,h/2); ctx.rotate(dirAnim*0.5);
+      const blades=p.blades, len=Math.max(w,h)*0.55;
+      for (let i=0;i<blades;i++){
+        ctx.fillStyle = i%2===0 ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)';
+        ctx.save(); ctx.rotate((Math.PI*2/blades)*i);
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.quadraticCurveTo(len*0.25,-len*0.08, len,0); ctx.quadraticCurveTo(len*0.25,len*0.08,0,0); ctx.fill();
+        ctx.restore();
+      }
       ctx.restore();
+      break;
+    }
+    case 21: {
+      ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=5*dpr;
+      const cx=w/2, cy=h/2;
+      for (let i=0;i<p.rings;i++){
+        const a = dirAnim*0.6 + i*(Math.PI*2/p.rings);
+        const ox = cx + Math.cos(a)*p.orbitR*dpr;
+        const oy = cy + Math.sin(a)*p.orbitR*dpr;
+        ctx.beginPath(); ctx.arc(ox, oy, p.ringR*dpr, 0, Math.PI*2); ctx.stroke();
+      }
+      break;
+    }
+    case 22: {
+      const cell=p.cell*dpr; ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineWidth=4*dpr;
+      const offset = wrap01(dirAnim/6)*cell;
+      for (let y=-cell; y<h+cell; y+=cell/2){
+        for (let x=-cell; x<w+cell; x+=cell){
+          const xx = x + (Math.round(y/(cell/2))%2===0 ? 0 : cell/2) + offset;
+          ctx.beginPath();
+          ctx.moveTo(xx, y-cell/4); ctx.lineTo(xx+cell/4, y); ctx.lineTo(xx, y+cell/4); ctx.lineTo(xx-cell/4, y); ctx.closePath();
+          ctx.stroke();
+        }
+      }
+      break;
+    }
+    case 23: {
+      p.parts.forEach(pt=>{
+        const cx = pt.x*w;
+        const cy = wrap01(pt.y + pt.vy*t*d.dir) * h;
+        const len = pt.len*dpr;
+        const g = ctx.createLinearGradient(cx, cy-len, cx, cy);
+        g.addColorStop(0, 'rgba(255,255,255,0)');
+        g.addColorStop(1, 'rgba(255,255,255,0.22)');
+        ctx.fillStyle = g;
+        ctx.fillRect(cx - pt.w*dpr/2, cy-len, pt.w*dpr, len);
+      });
+      break;
+    }
+    case 24: {
+      const cx=w/2, cy=h/2, gap=p.ringGap*dpr;
+      const pulse = Math.sin(anim)*0.3*dpr*10;
+      let i=0;
+      for (let r=gap; r<w; r+=gap){
+        ctx.fillStyle = i%2===0 ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)';
+        ctx.beginPath(); ctx.arc(cx,cy, r+pulse, 0, Math.PI*2); ctx.fill();
+        i++;
+      }
+      break;
+    }
+    case 25: {
+      const bw=p.brickW*dpr, bh=p.brickH*dpr;
+      const offset = wrap01(dirAnim/6) * bw;
+      ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=3*dpr;
+      let row=0;
+      for (let y=0; y<h; y+=bh){
+        const rowOffset = (row%2===0) ? 0 : bw/2;
+        for (let x=-bw; x<w+bw; x+=bw){
+          ctx.strokeRect(x+rowOffset+offset, y, bw, bh);
+        }
+        row++;
+      }
+      break;
+    }
+    case 26: {
+      p.parts.forEach(pt=>{
+        const cx=pt.x*w, cy=wrap01(pt.y - pt.vy*t*d.dir)*h;
+        const pulse = Math.sin(anim*2+pt.ph)*0.3+0.85;
+        ctx.strokeStyle='rgba(255,255,255,0.22)'; ctx.lineWidth=3*dpr;
+        ctx.beginPath(); ctx.arc(cx,cy, pt.r*dpr*pulse, 0, Math.PI*2); ctx.stroke();
+      });
+      break;
+    }
+    case 27: {
+      const cx=w/2, cy=h/2;
+      ctx.fillStyle='rgba(255,255,255,0.2)';
+      p.sats.forEach(s=>{
+        const a = t*s.speed + s.phase;
+        const x = cx + Math.cos(a)*s.r*w;
+        const y = cy + Math.sin(a)*s.r*h;
+        ctx.beginPath(); ctx.arc(x,y, s.size*dpr, 0, Math.PI*2); ctx.fill();
+      });
+      break;
+    }
+    case 28: {
+      ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=p.thickness*dpr; ctx.lineCap='round';
+      const offset = dirAnim*40*dpr;
+      ctx.beginPath();
+      for (let x=-100*dpr; x<w+100*dpr; x+=6*dpr){
+        const y = h/2 + Math.sin((x+offset)/w * p.freq*Math.PI*2) * p.amp*dpr;
+        if (x===-100*dpr) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      break;
+    }
+    case 29: {
+      const pts = p.pts.map(pt => ({ x: pt.x*w, y: pt.y*h, tw: Math.sin(anim*1.5+pt.ph)*0.5+0.5 }));
+      ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=2*dpr;
+      for (let i=0;i<pts.length;i++)
+        for (let j=i+1;j<pts.length;j++){
+          const dx=(pts[i].x-pts[j].x)/w, dy=(pts[i].y-pts[j].y)/h;
+          if (Math.hypot(dx,dy) < p.connectDist){
+            ctx.beginPath(); ctx.moveTo(pts[i].x,pts[i].y); ctx.lineTo(pts[j].x,pts[j].y); ctx.stroke();
+          }
+        }
+      pts.forEach(pt=>{
+        ctx.fillStyle='rgba(255,255,255,' + (0.2+pt.tw*0.4).toFixed(2) + ')';
+        ctx.beginPath(); ctx.arc(pt.x,pt.y,(2+pt.tw*2)*dpr,0,Math.PI*2); ctx.fill();
+      });
+      break;
+    }
+    case 30: { // ascending triangle mountains
+      for (let row = 0; row < p.rows; row++) {
+        const size = p.baseSize * (0.4 + (row / p.rows) * 1.2) * dpr;
+        const bob = Math.sin(dirAnim + row * 0.4) * 8 * dpr;
+        const rowOpacity = 0.08 + (row / p.rows) * 0.16;
+        ctx.fillStyle = 'rgba(255,255,255,' + rowOpacity.toFixed(2) + ')';
+        for (let col = 0; col < p.cols; col++) {
+          const xFrac = (col + 0.5 + (row % 2 ? 0.5 : 0)) / p.cols;
+          const x = xFrac * w;
+          const y = h - ((row + 0.5) / p.rows) * h * 0.9 + bob;
+          ctx.beginPath();
+          ctx.moveTo(x, y - size/2);
+          ctx.lineTo(x - size/2, y + size/2);
+          ctx.lineTo(x + size/2, y + size/2);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+      break;
+    }
+    case 31: { // faceted mountain skyline (parallax layers)
+      p.layers.forEach((layer, li) => {
+        ctx.fillStyle = 'rgba(255,255,255,' + layer.opacity.toFixed(2) + ')';
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        layer.pts.forEach(pt => {
+          const x = pt.x * w + Math.sin(dirAnim * layer.speedFactor * 0.3 + li) * 22 * dpr;
+          ctx.lineTo(x, pt.y * h);
+        });
+        ctx.lineTo(w, h);
+        ctx.closePath();
+        ctx.fill();
+      });
+      break;
+    }
+    case 32: { // fine interlocking zigzag weave
+      const zw = p.zw * dpr, zh = p.zh * dpr;
+      const offset = wrap01(dirAnim/6) * zh * 2;
+      drawZigzagLayer(ctx, w, h, zw, zh, offset, 'rgba(255,255,255,0.18)', 4*dpr);
+      drawZigzagLayer(ctx, w, h, zw, zh, offset + zh, 'rgba(0,0,0,0.14)', 3*dpr);
+      break;
     }
   }
 
-  // Randomly darken or lighten the whole card for extra contrast variety
-  const moodRoll = Math.random();
-  if (moodRoll < 0.35) {
-    ctx.fillStyle = `rgba(0,0,0,${(0.15 + Math.random() * 0.35).toFixed(2)})`;
-    ctx.fillRect(0, 0, w, h);
-  } else if (moodRoll > 0.85) {
-    ctx.fillStyle = `rgba(255,255,255,${(0.08 + Math.random() * 0.15).toFixed(2)})`;
-    ctx.fillRect(0, 0, w, h);
-  }
+  if (d.darken) { ctx.fillStyle='rgba(0,0,0,0.28)'; ctx.fillRect(0,0,w,h); }
+  else if (d.lighten) { ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(0,0,w,h); }
 }
 
-drawCard(cur().canvas);
-drawCard(nxt().canvas);
-cur().card.style.transform = 'translateY(0px)';
-nxt().card.style.transform = `translateY(${H}px)`;
+// ---------------- history + navigation ----------------
 
-// ---- pseudo-haptic "pop" sound (Safari blocks real vibration for web pages) ----
+const history = {};
+function getDescriptor(index) {
+  if (!(index in history)) history[index] = generateDescriptor();
+  return history[index];
+}
+
+let currentIndex = 0;
+const role = { prev: layerDefs[0], cur: layerDefs[1], next: layerDefs[2] };
+role.prev.descriptor = getDescriptor(currentIndex - 1);
+role.cur.descriptor = getDescriptor(currentIndex);
+role.next.descriptor = getDescriptor(currentIndex + 1);
+
+function layoutStatic() {
+  role.prev.card.style.transition = 'none';
+  role.cur.card.style.transition = 'none';
+  role.next.card.style.transition = 'none';
+  role.prev.card.style.transform = 'translateY(' + (-H) + 'px)';
+  role.cur.card.style.transform = 'translateY(0px)';
+  role.next.card.style.transform = 'translateY(' + H + 'px)';
+}
+layoutStatic();
+
+const startTime = performance.now();
+function animLoop(now) {
+  const t = (now - startTime) / 1000;
+  drawCard(role.prev.canvas, role.prev.descriptor, t);
+  drawCard(role.cur.canvas, role.cur.descriptor, t);
+  drawCard(role.next.canvas, role.next.descriptor, t);
+  requestAnimationFrame(animLoop);
+}
+requestAnimationFrame(animLoop);
+
+// ---------------- audio pop ----------------
+
 let audioCtx = null;
 function tick() {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const t = audioCtx.currentTime;
-
-    // low thump body with a fast pitch drop, like something flat hitting a hollow pipe
     const osc = audioCtx.createOscillator();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(190, t);
@@ -383,131 +618,109 @@ function tick() {
     oscGain.gain.setValueAtTime(0.3, t);
     oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
     osc.connect(oscGain).connect(audioCtx.destination);
-    osc.start(t);
-    osc.stop(t + 0.12);
+    osc.start(t); osc.stop(t + 0.12);
 
-    // short filtered noise burst for the "flat hit" click on top of the thump
     const bufferSize = Math.floor(audioCtx.sampleRate * 0.025);
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
-    }
-    const noise = audioCtx.createBufferSource();
-    noise.buffer = buffer;
-    const noiseFilter = audioCtx.createBiquadFilter();
-    noiseFilter.type = 'lowpass';
-    noiseFilter.frequency.value = 1100;
-    const noiseGain = audioCtx.createGain();
-    noiseGain.gain.setValueAtTime(0.18, t);
-    noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
-    noise.connect(noiseFilter).connect(noiseGain).connect(audioCtx.destination);
-    noise.start(t);
+    for (let i=0;i<bufferSize;i++) data[i] = (Math.random()*2-1)*(1-i/bufferSize);
+    const noise = audioCtx.createBufferSource(); noise.buffer = buffer;
+    const noiseFilter = audioCtx.createBiquadFilter(); noiseFilter.type='lowpass'; noiseFilter.frequency.value=1100;
+    const noiseGain = audioCtx.createGain(); noiseGain.gain.setValueAtTime(0.18,t); noiseGain.gain.exponentialRampToValueAtTime(0.001,t+0.03);
+    noise.connect(noiseFilter).connect(noiseGain).connect(audioCtx.destination); noise.start(t);
   } catch (e) {}
-  if (navigator.vibrate) navigator.vibrate(30); // works on Android, no-op on iOS Safari
+  if (navigator.vibrate) navigator.vibrate(30);
 }
 
-// ---- rAF-driven animation, fully interruptible mid-flight for fast flicking ----
-let pos = 0;          // current offset of cur() card, 0 (rest) to -H (fully committed)
-let animToken = 0;    // incrementing token invalidates any in-flight animation loop
-let dragging = false;
-let startY = 0, startPos = 0;
-let lastY = 0, lastT = 0, velocity = 0;
-let count = 0;
+// ---------------- touch / swipe handling ----------------
 
-function render() {
-  cur().card.style.transform = `translateY(${pos}px)`;
-  nxt().card.style.transform = `translateY(${H + pos}px)`;
-}
+let startY = 0, startTouchTime = 0, dragging = false, animating = false, pendingTimeout = null;
 
-function animate(target, duration, onDone) {
-  const myToken = ++animToken;
-  const startVal = pos;
-  const startTime = performance.now();
-  function step(now) {
-    if (myToken !== animToken) return; // interrupted by a new touch
-    const t = Math.min(1, (now - startTime) / duration);
-    const eased = 1 - Math.pow(1 - t, 3);
-    pos = startVal + (target - startVal) * eased;
-    render();
-    if (t < 1) {
-      requestAnimationFrame(step);
-    } else {
-      pos = target;
-      render();
-      if (onDone) onDone();
-    }
-  }
-  requestAnimationFrame(step);
-}
-
-function commitSwipe() {
-  animate(-H, 120, () => {
-    count++;
-    counterNum.textContent = count;
-    tick();
-
-    const oldCur = curIdx;
-    curIdx = nextIdx;
-    nextIdx = oldCur;
-
-    pos = 0;
-    render();
-    drawCard(nxt().canvas); // paint fresh content into the new "next" layer
-  });
-}
-
-function cancelSwipe() {
-  animate(0, 140);
+function finishPending() {
+  if (pendingTimeout) { clearTimeout(pendingTimeout); pendingTimeout = null; }
+  animating = false;
+  layoutStatic();
 }
 
 stage.addEventListener('touchstart', e => {
-  // iOS Safari only allows audio to start from a direct gesture — unlock/resume it right here.
-  if (!audioCtx) {
-    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
-  }
-  if (audioCtx && audioCtx.state === 'suspended') {
-    audioCtx.resume();
-  }
-
-  animToken++; // invalidate any animation in progress so a new drag can take over instantly
+  if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  if (animating) finishPending();
   startY = e.touches[0].clientY;
-  lastY = startY;
-  lastT = performance.now();
-  velocity = 0;
-  startPos = pos;
+  startTouchTime = performance.now();
   dragging = true;
   hint.style.opacity = '0';
 }, { passive: true });
 
 stage.addEventListener('touchmove', e => {
-  if (!dragging) return;
-  const y = e.touches[0].clientY;
-  const now = performance.now();
-  const dt = now - lastT;
-  if (dt > 0) velocity = (y - lastY) / dt; // px per ms, negative = moving up
-  lastY = y;
-  lastT = now;
-
-  const dy = y - startY;
-  pos = Math.max(-H, Math.min(0, startPos + dy));
-  render();
+  if (!dragging || animating) return;
+  const dy = e.touches[0].clientY - startY;
+  role.prev.card.style.transition = 'none';
+  role.cur.card.style.transition = 'none';
+  role.next.card.style.transition = 'none';
+  role.cur.card.style.transform = 'translateY(' + dy + 'px)';
+  role.next.card.style.transform = 'translateY(' + (H + dy) + 'px)';
+  role.prev.card.style.transform = 'translateY(' + (-H + dy) + 'px)';
 }, { passive: true });
 
 stage.addEventListener('touchend', e => {
-  if (!dragging) return;
+  if (!dragging || animating) return;
   dragging = false;
+  const dy = e.changedTouches[0].clientY - startY;
+  const dt = Math.max((performance.now() - startTouchTime) / 1000, 0.001);
+  const velocity = dy / dt;
+  const distThreshold = H * 0.18;
+  const flick = Math.abs(velocity) > 700;
+  const goingUp = dy < -distThreshold || (flick && velocity < 0);
+  const goingDown = (dy > distThreshold || (flick && velocity > 0)) && currentIndex > 0;
 
-  const distanceThreshold = H * 0.15;
-  const flungFastEnough = velocity < -0.35; // fast upward flick, even if short distance
-  const draggedFarEnough = pos < -distanceThreshold;
-
-  if (flungFastEnough || draggedFarEnough) {
-    commitSwipe();
-  } else {
-    cancelSwipe();
+  if (goingUp) commit(1);
+  else if (goingDown) commit(-1);
+  else {
+    role.prev.card.style.transition = 'transform 0.25s ease-out';
+    role.cur.card.style.transition = 'transform 0.25s ease-out';
+    role.next.card.style.transition = 'transform 0.25s ease-out';
+    role.prev.card.style.transform = 'translateY(' + (-H) + 'px)';
+    role.cur.card.style.transform = 'translateY(0px)';
+    role.next.card.style.transform = 'translateY(' + H + 'px)';
   }
 });
+
+function commit(direction) {
+  animating = true;
+  tick();
+  const dur = 0.2;
+  role.prev.card.style.transition = 'transform ' + dur + 's ease-out';
+  role.cur.card.style.transition = 'transform ' + dur + 's ease-out';
+  role.next.card.style.transition = 'transform ' + dur + 's ease-out';
+
+  if (direction === 1) {
+    role.prev.card.style.transform = 'translateY(' + (-2*H) + 'px)';
+    role.cur.card.style.transform = 'translateY(' + (-H) + 'px)';
+    role.next.card.style.transform = 'translateY(0px)';
+  } else {
+    role.prev.card.style.transform = 'translateY(0px)';
+    role.cur.card.style.transform = 'translateY(' + H + 'px)';
+    role.next.card.style.transform = 'translateY(' + (2*H) + 'px)';
+  }
+
+  pendingTimeout = setTimeout(() => {
+    currentIndex += direction;
+    counterNum.textContent = currentIndex;
+    if (direction === 1) {
+      const recycled = role.prev;
+      role.prev = role.cur; role.cur = role.next; role.next = recycled;
+      role.next.descriptor = getDescriptor(currentIndex + 1);
+    } else {
+      const recycled = role.next;
+      role.next = role.cur; role.cur = role.prev; role.prev = recycled;
+      role.prev.descriptor = getDescriptor(currentIndex - 1);
+    }
+    layoutStatic();
+    animating = false;
+    pendingTimeout = null;
+  }, dur * 1000 + 15);
+}
 </script>
 
 </body>
